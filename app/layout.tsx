@@ -1,4 +1,8 @@
 import type { Metadata, Viewport } from "next";
+import "@fontsource-variable/geist";
+import "@fontsource-variable/geist-mono";
+import "@fontsource/instrument-serif/400.css";
+import "@fontsource/instrument-serif/400-italic.css";
 import "./globals.css";
 import SwRegister from "./sw-register";
 
@@ -24,7 +28,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#0b0c10",
+  themeColor: "#08080b",
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
@@ -34,7 +38,7 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" className="h-full">
-      <body className="h-full bg-[#0b0c10] text-zinc-100 antialiased">
+      <body className="h-full bg-ink text-bone antialiased">
         {children}
         <SwRegister />
       </body>
