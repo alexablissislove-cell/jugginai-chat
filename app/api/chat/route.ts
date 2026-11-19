@@ -1,4 +1,5 @@
 import { clientIp, getSession, json, MODEL, r2, r2Url, rateLimit } from "@/lib/server";
+import { traceGeneration } from "@/lib/langfuse";
 
 export const dynamic = "force-dynamic";
 
@@ -42,17 +43,34 @@ export async function POST(req: Request) {
     if (extra.length) history[history.length - 1] = { role: "user", content: [{ type: "text", text: last.content }, ...extra] };
   }
 
+  const started = Date.now();
   const upstream = await fetch("https://api.x.ai/v1/chat/completions", {
     method: "POST",
     headers: { authorization: `Bearer ${process.env.XAI_API_KEY}`, "content-type": "application/json" },
-    body: JSON.stringify({ model: MODEL, stream: true, messages: [{ role: "system", content: SYSTEM }, ...history] }),
+    body: JSON.stringify({
+      model: MODEL,
+      stream: true,
+      stream_options: { include_usage: true },
+      messages: [{ role: "system", content: SYSTEM }, ...history],
+    }),
     signal: req.signal,
   });
-  if (!upstream.ok || !upstream.body) return json({ error: `Model error (${upstream.status})` }, 502);
+  const traceInput = [{ role: "system", content: SYSTEM }, ...history];
+  if (!upstream.ok || !upstream.body) {
+    await traceGeneration({
+      name: "chat", provider: "xai", model: MODEL, input: traceInput, output: null,
+      startTime: started, endTime: Date.now(), status: upstream.status, sessionId: sid,
+    });
+    return json({ error: `Model error (${upstream.status})` }, 502);
+  }
 
   const enc = new TextEncoder();
   const dec = new TextDecoder();
   let buf = "";
+  let text = "";
+  let usage: any = null;
+  let model = MODEL;
+  let firstAt: number | null = null;
   const stream = upstream.body.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, ctl) {
@@ -65,10 +83,35 @@ export async function POST(req: Request) {
           const d = t.slice(5).trim();
           if (d === "[DONE]") continue;
           try {
-            const delta = JSON.parse(d).choices?.[0]?.delta?.content;
-            if (delta) ctl.enqueue(enc.encode(delta));
+            const chunk = JSON.parse(d);
+            if (chunk.usage) usage = chunk.usage;
+            if (chunk.model) model = chunk.model;
+            const delta = chunk.choices?.[0]?.delta?.content;
+            if (delta) {
+              if (!firstAt) firstAt = Date.now();
+              text += delta;
+              ctl.enqueue(enc.encode(delta));
+            }
           } catch {}
         }
+      },
+      async flush() {
+        await traceGeneration({
+          name: "chat",
+          provider: "xai",
+          model,
+          input: traceInput,
+          output: { role: "assistant", content: text },
+          startTime: started,
+          endTime: Date.now(),
+          completionStartTime: firstAt,
+          usage: usage
+            ? { input: usage.prompt_tokens, output: usage.completion_tokens, total: usage.total_tokens }
+            : null,
+          status: upstream.status,
+          sessionId: sid,
+          metadata: { attachments: body?.attachments?.length || undefined },
+        });
       },
     }),
   );
