@@ -2,7 +2,7 @@
 
 AI chat for https://jugginai.net — vinext (Next.js App Router on Vite) + Nitro, deployed to Vercel.
 
-- `/api/session` – Cloudflare Turnstile siteverify, issues signed session cookie
+- `/api/session` – password login, issues a signed session cookie (CHAT_PASSWORD)
 - `/api/chat` – streams Grok (xAI `grok-4.7`) responses; per-IP rate limit
 - `/api/upload` – file uploads to Cloudflare R2 (bucket `jugginai`, S3 API)
 

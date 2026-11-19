@@ -26,7 +26,7 @@ async function attachmentParts(sid: string, atts: Att[]) {
 
 export async function POST(req: Request) {
   const sid = getSession(req);
-  if (!sid) return json({ error: "Verify first" }, 401);
+  if (!sid) return json({ error: "Sign in first" }, 401);
   if (!rateLimit(`c:${clientIp(req)}`, 20, 60_000)) return json({ error: "Rate limit hit. Try again in a minute." }, 429);
 
   const body = (await req.json().catch(() => null)) as { messages?: Msg[]; attachments?: Att[] } | null;

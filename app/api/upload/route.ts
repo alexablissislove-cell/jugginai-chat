@@ -6,7 +6,7 @@ const MAX = 5 * 1024 * 1024;
 
 export async function POST(req: Request) {
   const sid = getSession(req);
-  if (!sid) return json({ error: "Verify first" }, 401);
+  if (!sid) return json({ error: "Sign in first" }, 401);
   if (!rateLimit(`u:${clientIp(req)}`, 20, 60_000)) return json({ error: "Slow down" }, 429);
   const form = await req.formData();
   const file = form.get("file");

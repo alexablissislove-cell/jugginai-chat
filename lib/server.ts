@@ -3,7 +3,7 @@ import { AwsClient } from "aws4fetch";
 
 export const MODEL = process.env.XAI_MODEL || "grok-4.7";
 export const SITEKEY = "0x4AAAAAAGH2mADHi-NyE14z";
-const COOKIE = "jg_s";
+export const COOKIE = "jg_s";
 const SESSION_TTL = 60 * 60 * 24 * 7; // 7 days
 
 function secret(): string {
@@ -24,17 +24,35 @@ export function newSessionCookie() {
   return { sid, cookie };
 }
 
-export function getSession(req: Request): string | null {
-  const raw = req.headers.get("cookie") || "";
-  const m = raw.match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`));
-  if (!m) return null;
-  const [sid, exp, sig] = m[1].split(".");
+export function clearSessionCookie() {
+  return `${COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
+}
+
+export function sessionFromToken(token: string | undefined | null): string | null {
+  if (!token || !process.env.SESSION_SECRET) return null;
+  const [sid, exp, sig] = token.split(".");
   if (!sid || !exp || !sig) return null;
   const expect = Buffer.from(sign(`${sid}.${exp}`));
   const got = Buffer.from(sig);
   if (expect.length !== got.length || !timingSafeEqual(expect, got)) return null;
   if (Number(exp) < Date.now() / 1000) return null;
   return sid;
+}
+
+export function getSession(req: Request): string | null {
+  const raw = req.headers.get("cookie") || "";
+  const m = raw.match(new RegExp(`(?:^|;\\s*)${COOKIE}=([^;]+)`));
+  return sessionFromToken(m?.[1]);
+}
+
+export function passwordOk(got: unknown): boolean {
+  if (typeof got !== "string" || !got) return false;
+  if (!process.env.SESSION_SECRET) return false;
+  const expect = process.env.CHAT_PASSWORD || "";
+  if (!expect) return false;
+  const a = createHmac("sha256", secret()).update(got).digest();
+  const b = createHmac("sha256", secret()).update(expect).digest();
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 export function clientIp(req: Request) {
