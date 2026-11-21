@@ -1,5 +1,6 @@
 import { clientIp, getSession, json, MODEL, r2, r2Url, rateLimit } from "@/lib/server";
 import { traceGeneration } from "@/lib/langfuse";
+import { HF_ROUTER, resolveHf } from "@/lib/hf";
 
 export const dynamic = "force-dynamic";
 
@@ -30,25 +31,38 @@ export async function POST(req: Request) {
   if (!sid) return json({ error: "Sign in first" }, 401);
   if (!rateLimit(`c:${clientIp(req)}`, 20, 60_000)) return json({ error: "Rate limit hit. Try again in a minute." }, 429);
 
-  const body = (await req.json().catch(() => null)) as { messages?: Msg[]; attachments?: Att[] } | null;
+  const body = (await req.json().catch(() => null)) as { messages?: Msg[]; attachments?: Att[]; model?: string } | null;
   const history = (body?.messages || [])
     .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
     .slice(-30)
     .map((m) => ({ role: m.role, content: m.content.slice(0, 20000) })) as any[];
   if (!history.length || history[history.length - 1].role !== "user") return json({ error: "Bad request" }, 400);
 
+  const choice = typeof body?.model === "string" && body.model !== "grok" ? body.model : "";
+  let hf: Awaited<ReturnType<typeof resolveHf>> = null;
+  if (choice) {
+    hf = await resolveHf(choice).catch(() => null);
+    if (!hf) return json({ error: "That model isn't available right now. Pick another." }, 400);
+  }
+  const provider = hf ? "huggingface" : "xai";
+  const reqModel = hf ? hf.model : MODEL;
+
   if (body?.attachments?.length) {
     const last = history[history.length - 1];
-    const extra = await attachmentParts(sid, body.attachments);
+    let extra = await attachmentParts(sid, body.attachments);
+    if (hf && !hf.info.vision) extra = extra.filter((p) => p.type !== "image_url");
     if (extra.length) history[history.length - 1] = { role: "user", content: [{ type: "text", text: last.content }, ...extra] };
   }
 
   const started = Date.now();
-  const upstream = await fetch("https://api.x.ai/v1/chat/completions", {
+  const upstream = await fetch(hf ? `${HF_ROUTER}/chat/completions` : "https://api.x.ai/v1/chat/completions", {
     method: "POST",
-    headers: { authorization: `Bearer ${process.env.XAI_API_KEY}`, "content-type": "application/json" },
+    headers: {
+      authorization: `Bearer ${hf ? process.env.HF_TOKEN : process.env.XAI_API_KEY}`,
+      "content-type": "application/json",
+    },
     body: JSON.stringify({
-      model: MODEL,
+      model: reqModel,
       stream: true,
       stream_options: { include_usage: true },
       messages: [{ role: "system", content: SYSTEM }, ...history],
@@ -58,7 +72,7 @@ export async function POST(req: Request) {
   const traceInput = [{ role: "system", content: SYSTEM }, ...history];
   if (!upstream.ok || !upstream.body) {
     await traceGeneration({
-      name: "chat", provider: "xai", model: MODEL, input: traceInput, output: null,
+      name: "chat", provider, model: reqModel, input: traceInput, output: null,
       startTime: started, endTime: Date.now(), status: upstream.status, sessionId: sid,
     });
     return json({ error: `Model error (${upstream.status})` }, 502);
@@ -69,7 +83,8 @@ export async function POST(req: Request) {
   let buf = "";
   let text = "";
   let usage: any = null;
-  let model = MODEL;
+  let model = reqModel;
+  let servedBy: string | undefined;
   let firstAt: number | null = null;
   const stream = upstream.body.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>({
@@ -86,6 +101,7 @@ export async function POST(req: Request) {
             const chunk = JSON.parse(d);
             if (chunk.usage) usage = chunk.usage;
             if (chunk.model) model = chunk.model;
+            if (chunk.provider) servedBy = chunk.provider;
             const delta = chunk.choices?.[0]?.delta?.content;
             if (delta) {
               if (!firstAt) firstAt = Date.now();
@@ -98,7 +114,7 @@ export async function POST(req: Request) {
       async flush() {
         await traceGeneration({
           name: "chat",
-          provider: "xai",
+          provider,
           model,
           input: traceInput,
           output: { role: "assistant", content: text },
@@ -110,12 +126,12 @@ export async function POST(req: Request) {
             : null,
           status: upstream.status,
           sessionId: sid,
-          metadata: { attachments: body?.attachments?.length || undefined },
+          metadata: { attachments: body?.attachments?.length || undefined, requested: reqModel, servedBy },
         });
       },
     }),
   );
   return new Response(stream, {
-    headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "x-model": MODEL },
+    headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "x-model": reqModel, "x-provider": provider },
   });
 }
