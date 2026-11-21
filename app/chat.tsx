@@ -6,6 +6,36 @@ import { CopyButton, Markdown } from "./markdown";
 type Att = { key: string; name: string; type: string };
 type Msg = { role: "user" | "assistant"; content: string; attachments?: Att[] };
 const STORE = "jugginai.chat.v1";
+const MODEL_STORE = "jugginai.model.v1";
+type Opt = { value: string; label: string; group: string };
+
+function ModelPicker({ value, options, onChange, disabled }: { value: string; options: Opt[]; onChange: (v: string) => void; disabled?: boolean }) {
+  const groups: [string, Opt[]][] = [];
+  for (const o of options) {
+    const g = groups.find(([name]) => name === o.group);
+    if (g) g[1].push(o);
+    else groups.push([o.group, [o]]);
+  }
+  const hf = value.startsWith("hf:");
+  return (
+    <label className="ml-1 inline-flex min-w-0 items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.03] py-0.5 pl-2 pr-1 text-[11px] font-medium text-ash">
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${hf ? "bg-amber-300 shadow-[0_0_6px_rgba(252,211,77,0.9)]" : "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.9)]"}`} aria-hidden="true" />
+      <span className="sr-only">Model</span>
+      <select
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className="max-w-[46vw] truncate bg-transparent text-[11px] text-ash outline-none sm:max-w-[260px] [&>optgroup]:bg-ink [&_option]:bg-ink"
+      >
+        {groups.map(([g, opts]) => (
+          <optgroup key={g} label={g}>
+            {opts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </optgroup>
+        ))}
+      </select>
+    </label>
+  );
+}
 
 const SUGGESTIONS = [
   { title: "Draft a launch plan", sub: "for a weekend side project", prompt: "Draft a tight launch plan for a weekend side project: goals, a checklist, and what to cut." },
@@ -84,6 +114,8 @@ export default function Chat() {
   const [pending, setPending] = useState<Att[]>([]);
   const [uploading, setUploading] = useState(0);
   const [err, setErr] = useState("");
+  const [model, setModel] = useState("grok");
+  const [options, setOptions] = useState<Opt[]>([{ value: "grok", label: "Grok", group: "xAI" }]);
   const endRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -91,7 +123,21 @@ export default function Chat() {
 
   useEffect(() => {
     try { setMessages(JSON.parse(localStorage.getItem(STORE) || "[]")); } catch {}
+    const saved = localStorage.getItem(MODEL_STORE) || "grok";
+    fetch("/api/models")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (!j?.options?.length) return;
+        setOptions(j.options);
+        setModel(j.options.some((o: Opt) => o.value === saved) ? saved : j.default || "grok");
+      })
+      .catch(() => {});
   }, []);
+
+  function chooseModel(v: string) {
+    setModel(v);
+    localStorage.setItem(MODEL_STORE, v);
+  }
   useEffect(() => {
     if (!busy) localStorage.setItem(STORE, JSON.stringify(messages.slice(-60)));
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -143,7 +189,7 @@ export default function Chat() {
       const r = await fetch("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ messages: next.map(({ role, content }) => ({ role, content })), attachments: user.attachments }),
+        body: JSON.stringify({ messages: next.map(({ role, content }) => ({ role, content })), attachments: user.attachments, model }),
       });
       const payload = (r.headers.get("content-type") || "").includes("application/json")
         ? await r.json().catch(() => ({}))
@@ -192,10 +238,7 @@ export default function Chat() {
           <div className="flex min-w-0 items-center gap-2.5">
             <Mark size={30} />
             <Wordmark className="text-[19px]" />
-            <span className="ml-1 hidden items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[11px] font-medium text-ash min-[400px]:inline-flex">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.9)]" aria-hidden="true" />
-              Grok
-            </span>
+            <ModelPicker value={model} options={options} onChange={chooseModel} disabled={busy} />
           </div>
           <nav className="flex items-center gap-0.5" aria-label="Chat actions">
             {!empty && (
@@ -359,7 +402,7 @@ export default function Chat() {
             </div>
           </form>
           <p className="mt-2 hidden text-center text-[11.5px] text-smoke sm:block">
-            <kbd className="font-sans text-ash">Enter</kbd> to send · <kbd className="font-sans text-ash">Shift + Enter</kbd> for a new line · Powered by Grok
+            <kbd className="font-sans text-ash">Enter</kbd> to send · <kbd className="font-sans text-ash">Shift + Enter</kbd> for a new line · Grok or Hugging Face models
           </p>
         </div>
       </footer>
